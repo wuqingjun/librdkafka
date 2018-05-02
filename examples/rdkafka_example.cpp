@@ -38,6 +38,10 @@
 #include <cstdio>
 #include <csignal>
 #include <cstring>
+#include <future>
+#include <sstream>
+#include <unordered_set>
+#include <mutex>
 
 #ifdef _MSC_VER
 #include "../win32/wingetopt.h"
@@ -52,7 +56,12 @@
  * #include <librdkafka/rdkafkacpp.h>
  */
 #include "rdkafkacpp.h"
+#include <unordered_map>
 
+using namespace std;
+
+static int msgCount = 0;
+static int endOffset = 0;
 
 static void metadata_print (const std::string &topic,
                             const RdKafka::Metadata *metadata) {
@@ -94,6 +103,7 @@ static void metadata_print (const std::string &topic,
                 << ", leader " << (*ip)->leader()
                 << ", replicas: ";
 
+
       /* Iterate partition's replicas */
       RdKafka::PartitionMetadata::ReplicasIterator ir;
       for (ir = (*ip)->replicas()->begin();
@@ -133,6 +143,19 @@ class ExampleDeliveryReportCb : public RdKafka::DeliveryReportCb {
       std::cout << "Key: " << *(message.key()) << ";" << std::endl;
   }
 };
+
+
+vector<string> ParseKey(std::string key, char sep)
+{
+	istringstream iss(key);
+	string token;
+	vector<string> tokens;
+	while (getline(iss, token, sep))
+	{
+		tokens.push_back(token);
+	}
+	return tokens;
+}
 
 
 class ExampleEventCb : public RdKafka::EventCb {
@@ -184,21 +207,28 @@ class MyHashPartitionerCb : public RdKafka::PartitionerCb {
   }
 };
 
+unordered_map<string, unordered_set<int> > mpCount;
+mutex mtxMpCount;
+int finsihedCount = 0;
+const int MessageNumPerClient = 144;
+
 void msg_consume(RdKafka::Message* message, void* opaque) {
+	string machineName;
   switch (message->err()) {
     case RdKafka::ERR__TIMED_OUT:
       break;
 
-    case RdKafka::ERR_NO_ERROR:
-      /* Real message */
-      std::cout << "Read msg at offset " << message->offset() << std::endl;
-      if (message->key()) {
-        std::cout << "Key: " << *message->key() << std::endl;
-      }
-      printf("%.*s\n",
-        static_cast<int>(message->len()),
-        static_cast<const char *>(message->payload()));
-      break;
+	case RdKafka::ERR_NO_ERROR:
+	{
+		++msgCount;
+		std::cout << "msg count: " << msgCount << std::endl;
+		std::cout << "offset: " << message->offset() << std::endl;
+
+		cout << "Key: " << message->key()->c_str() << endl;
+
+		if (endOffset >= 0 && message->offset() == endOffset) run = false;
+		break;
+	}
 
     case RdKafka::ERR__PARTITION_EOF:
       /* Last message */
@@ -250,7 +280,7 @@ int main (int argc, char **argv) {
   RdKafka::Conf *tconf = RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC);
 
 
-  while ((opt = getopt(argc, argv, "PCLt:p:b:z:qd:o:eX:AM:f:")) != -1) {
+  while ((opt = getopt(argc, argv, "PCLt:p:b:z:qd:o:e:X:AM:f:")) != -1) {
     switch (opt) {
     case 'P':
     case 'C':
@@ -293,7 +323,9 @@ int main (int argc, char **argv) {
 	start_offset = strtoll(optarg, NULL, 10);
       break;
     case 'e':
-      exit_eof = true;
+		std::cout << optarg << std::endl;
+		endOffset = atoi(optarg);
+		if (-1 == endOffset) exit_eof = true;
       break;
     case 'd':
       debug = optarg;
@@ -527,63 +559,53 @@ int main (int argc, char **argv) {
     if(topic_str.empty())
       goto usage;
 
-    /*
-     * Create consumer using accumulated global configuration.
-     */
-    RdKafka::Consumer *consumer = RdKafka::Consumer::create(conf, errstr);
-    if (!consumer) {
-      std::cerr << "Failed to create consumer: " << errstr << std::endl;
-      exit(1);
-    }
 
-    std::cout << "% Created consumer " << consumer->name() << std::endl;
+	/*
+	* Create consumer using accumulated global configuration.
+	*/
+	RdKafka::Consumer *consumer = RdKafka::Consumer::create(conf, errstr);
+	std::cout << "% Created consumer " << consumer->name() << std::endl;
 
-    /*
-     * Create topic handle.
-     */
-    RdKafka::Topic *topic = RdKafka::Topic::create(consumer, topic_str,
-						   tconf, errstr);
-    if (!topic) {
-      std::cerr << "Failed to create topic: " << errstr << std::endl;
-      exit(1);
-    }
+	/*
+	* Create topic handle.
+	*/
+	RdKafka::Topic *topic = RdKafka::Topic::create(consumer, topic_str,
+		tconf, errstr);
 
-    /*
-     * Start consumer for topic+partition at start offset
-     */
-    RdKafka::ErrorCode resp = consumer->start(topic, partition, start_offset);
-    if (resp != RdKafka::ERR_NO_ERROR) {
-      std::cerr << "Failed to start consumer: " <<
-	RdKafka::err2str(resp) << std::endl;
-      exit(1);
-    }
+	/*
+	* Start consumer for topic+partition at start offset
+	*/
+	RdKafka::ErrorCode resp = consumer->start(topic, partition, start_offset);
 
-    ExampleConsumeCb ex_consume_cb;
+	ExampleConsumeCb ex_consume_cb;
 
-    /*
-     * Consume messages
-     */
-    while (run) {
-      if (use_ccb) {
-        consumer->consume_callback(topic, partition, 1000,
-                                   &ex_consume_cb, &use_ccb);
-      } else {
-        RdKafka::Message *msg = consumer->consume(topic, partition, 1000);
-        msg_consume(msg, NULL);
-        delete msg;
-      }
-      consumer->poll(0);
-    }
+	/*
+	* Consume messages
+	*/
+	while (run) {
+		if (use_ccb) {
+			consumer->consume_callback(topic, partition, 1000,
+				&ex_consume_cb, &use_ccb);
+		}
+		else {
+			RdKafka::Message *msg = consumer->consume(topic, partition, 1000);
+			msg_consume(msg, NULL);
+			delete msg;
+		}
+		consumer->poll(0);
 
-    /*
-     * Stop consumer
-     */
-    consumer->stop(topic, partition);
+	}
 
-    consumer->poll(1000);
+	/*
+	* Stop consumer
+	*/
+	consumer->stop(topic, partition);
 
-    delete topic;
-    delete consumer;
+	consumer->poll(1000);
+
+	delete topic;
+	delete consumer;
+
   } else {
     /* Metadata mode */
 
@@ -591,10 +613,6 @@ int main (int argc, char **argv) {
      * Create producer using accumulated global configuration.
      */
     RdKafka::Producer *producer = RdKafka::Producer::create(conf, errstr);
-    if (!producer) {
-      std::cerr << "Failed to create producer: " << errstr << std::endl;
-      exit(1);
-    }
 
     std::cout << "% Created producer " << producer->name() << std::endl;
 
