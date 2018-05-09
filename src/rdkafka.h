@@ -233,6 +233,7 @@ typedef struct rd_kafka_topic_s rd_kafka_topic_t;
 typedef struct rd_kafka_conf_s rd_kafka_conf_t;
 typedef struct rd_kafka_topic_conf_s rd_kafka_topic_conf_t;
 typedef struct rd_kafka_queue_s rd_kafka_queue_t;
+typedef struct rd_kafka_op_s rd_kafka_event_t;
 typedef struct rd_kafka_topic_result_s rd_kafka_topic_result_t;
 /* @endcond */
 
@@ -1318,6 +1319,46 @@ void rd_kafka_conf_set_events(rd_kafka_conf_t *conf, int events);
 
 
 /**
+ * @brief Generic event callback to be used with the event API to trigger
+ *        callbacks for \c rd_kafka_event_t objects from a background
+ *        thread serving the background queue.
+ *
+ * How to use:
+ *  1. First set the event callback on the configuration object with this
+ *     function, followed by creating an rd_kafka_t instance
+ *     with rd_kafka_new().
+ *  2. Get the instance's background queue with rd_kafka_queue_get_background()
+ *     and pass it as the reply/response queue to an API that takes an
+ *     event queue, such as rd_kafka_CreateTopics().
+ *  3. As the response event is ready and enqueued on the background queue the
+ *     event callback will be triggered from the background thread.
+ *
+ * The application must destroyed the \c rkev passed to \p event cb using
+ * rd_kafka_event_destroy().
+ *
+ * The \p event_cb \c opaque argument is the opaque set with
+ * rd_kafka_conf_set_opaque().
+ *
+ * @remark This callback is a specialized alternative to the poll-based
+ *         event API described in the Event interface section.
+ *
+ * @remark The \p event_cb will be called spontaneously from a background
+ *         thread completely managed by librdkafka.
+ *         Take care to perform proper locking of application objects.
+ *
+ * @warning The application MUST NOT call rd_kafka_destroy() from the
+ *          event callback.
+ *
+ * @sa rd_kafka_queue_get_background
+ */
+RD_EXPORT void
+rd_kafka_conf_set_background_event_cb (rd_kafka_conf_t *conf,
+                                       void (*event_cb) (rd_kafka_t *rk,
+                                                         rd_kafka_event_t *rkev,
+                                                         void *opaque));
+
+
+/**
  @deprecated See rd_kafka_conf_set_dr_msg_cb()
 */
 RD_EXPORT
@@ -2337,6 +2378,32 @@ RD_EXPORT
 rd_kafka_queue_t *rd_kafka_queue_get_partition (rd_kafka_t *rk,
                                                 const char *topic,
                                                 int32_t partition);
+
+/**
+ * @returns a reference to the background thread queue, or NULL if the
+ *          background queue is not enabled.
+ *
+ * To enable the background thread queue set a generic event handler callback
+ * with rd_kafka_conf_set_background_event_cb() on the client instance
+ * configuration object (rd_kafka_conf_t).
+ *
+ * The background queue is polled and served by librdkafka and MUST NOT be
+ * polled, forwarded, or otherwise managed by the application, it may only
+ * be used as the destination queue passed to queue-enabled APIs, such as
+ * the Admin API.
+ *
+ * The background thread queue provides the application with an automatically
+ * polled queue that triggers the event callback in a background thread,
+ * this background thread is completely managed by librdkafka.
+ *
+ * Use rd_kafka_queue_destroy() to loose the reference.
+ *
+ * @warning The background queue MUST NOT be read from (polled, consumed, etc),
+ *          or forwarded from.
+ */
+RD_EXPORT
+rd_kafka_queue_t *rd_kafka_queue_get_background (rd_kafka_t *rk);
+
 
 /**
  * @brief Forward/re-route queue \p src to \p dst.
@@ -3389,14 +3456,19 @@ void rd_kafka_log_syslog(const rd_kafka_t *rk, int level,
 /**
  * @brief Returns the current out queue length.
  *
- * The out queue contains messages waiting to be sent to, or acknowledged by,
- * the broker.
+ * The out queue length is the sum of:
+ *  - number of messages waiting to be sent to, or acknowledged by,
+ *    the broker.
+ *  - number of delivery reports waiting
+ *  - number of callbacks waiting in rd_kafka_[consumer_]poll() queue
+ *  - number of events in the background queue
+ *    (see rd_kafka_conf_set_background_event_cb)
  *
  * An application should wait for this queue to reach zero before terminating
- * to make sure outstanding requests (such as offset commits) are fully
- * processed.
+ * to make sure outstanding messages, requests (such as offset commits),
+ * and events are fully processed.
  *
- * @returns number of messages in the out queue.
+ * @returns number of messages and events waiting in queues.
  */
 RD_EXPORT
 int         rd_kafka_outq_len(rd_kafka_t *rk);
@@ -3494,9 +3566,6 @@ typedef int rd_kafka_event_type_t;
 #define RD_KAFKA_EVENT_CREATEPARTITIONS_RESULT 102 /**< CreatePartitions_result_t */
 #define RD_KAFKA_EVENT_ALTERCONFIGS_RESULT 103 /**< AlterConfigs_result_t */
 #define RD_KAFKA_EVENT_DESCRIBECONFIGS_RESULT 104 /**< DescribeConfigs_result_t */
-
-
-typedef struct rd_kafka_op_s rd_kafka_event_t;
 
 
 /**
@@ -3738,6 +3807,8 @@ rd_kafka_event_DescribeConfigs_result (rd_kafka_event_t *rkev);
  * @returns an event, or NULL.
  *
  * @remark Use rd_kafka_event_destroy() to free the event.
+ *
+ * @sa rd_kafka_conf_set_background_event_cb()
  */
 RD_EXPORT
 rd_kafka_event_t *rd_kafka_queue_poll (rd_kafka_queue_t *rkqu, int timeout_ms);
@@ -3749,6 +3820,11 @@ rd_kafka_event_t *rd_kafka_queue_poll (rd_kafka_queue_t *rkqu, int timeout_ms);
 *
 * @remark This API must only be used for queues with callbacks registered
 *         for all expected event types. E.g., not a message queue.
+*
+* @remark Also see rd_kafka_conf_set_background_event_cb() for triggering
+*         event callbacks from a librdkafka-managed background thread.
+*
+* @sa rd_kafka_conf_set_background_event_cb()
 */
 RD_EXPORT
 int rd_kafka_queue_poll_callback (rd_kafka_queue_t *rkqu, int timeout_ms);
