@@ -232,8 +232,14 @@ struct test tests[] = {
         _TEST(0050_subscribe_adds, 0, TEST_BRKVER(0,9,0,0)),
         _TEST(0051_assign_adds, 0, TEST_BRKVER(0,9,0,0)),
         _TEST(0052_msg_timestamps, 0, TEST_BRKVER(0,10,0,0)),
-        _TEST(0053_stats_cb, TEST_F_LOCAL),
-        _TEST(0053_stats_timing, 0),
+        _TEST(0053_stats_timing, TEST_F_LOCAL),
+        _TEST(0053_stats,
+#if WITH_RAPIDJSON
+              0
+#else
+              TEST_F_KNOWN_ISSUE
+#endif
+                ),
         _TEST(0054_offset_time, 0, TEST_BRKVER(0,10,1,0)),
         _TEST(0055_producer_latency, TEST_F_KNOWN_ISSUE_WIN32),
         _TEST(0056_balanced_group_mt, 0, TEST_BRKVER(0,9,0,0)),
@@ -784,33 +790,40 @@ void test_prepare_msg (uint64_t testid, int32_t partition, int msg_id,
 /**
  * Parse a message token
  */
+void test_msg_parse00 (const char *func, int line,
+                       uint64_t testid, int32_t exp_partition, int *msgidp,
+                       const char *topic, int32_t partition, int64_t offset,
+                       const char *key, size_t key_size) {
+        char buf[128];
+        uint64_t in_testid;
+        int in_part;
+
+        if (!key)
+                TEST_FAIL("%s:%i: Message (%s [%"PRId32"] @ %"PRId64") "
+                          "has empty key\n",
+                          func, line, topic, partition, offset);
+
+        rd_snprintf(buf, sizeof(buf), "%.*s", (int)key_size, key);
+
+        if (sscanf(buf, "testid=%"SCNu64", partition=%i, msg=%i\n",
+                   &in_testid, &in_part, msgidp) != 3)
+                TEST_FAIL("%s:%i: Incorrect key format: %s", func, line, buf);
+
+
+        if (testid != in_testid ||
+            (exp_partition != -1 && exp_partition != in_part))
+                TEST_FAIL("%s:%i: Our testid %"PRIu64", part %i did "
+                          "not match message: \"%s\"\n",
+                  func, line, testid, (int)exp_partition, buf);
+}
+
 void test_msg_parse0 (const char *func, int line,
-		      uint64_t testid, rd_kafka_message_t *rkmessage,
-		      int32_t exp_partition, int *msgidp) {
-	char buf[128];
-	uint64_t in_testid;
-	int in_part;
-
-	if (!rkmessage->key)
-		TEST_FAIL("%s:%i: Message (%s [%"PRId32"] @ %"PRId64") "
-			  "has empty key\n",
-			  func, line,
-			  rd_kafka_topic_name(rkmessage->rkt),
-			  rkmessage->partition, rkmessage->offset);
-
-	rd_snprintf(buf, sizeof(buf), "%.*s", (int)rkmessage->key_len,
-		    (char *)rkmessage->key);
-
-	if (sscanf(buf, "testid=%"SCNu64", partition=%i, msg=%i\n",
-		   &in_testid, &in_part, msgidp) != 3)
-		TEST_FAIL("%s:%i: Incorrect key format: %s", func, line, buf);
-
-
-	if (testid != in_testid ||
-	    (exp_partition != -1 && exp_partition != in_part))
-		TEST_FAIL("%s:%i: Our testid %"PRIu64", part %i did "
-			  "not match message: \"%s\"\n",
-		  func, line, testid, (int)exp_partition, buf);
+                      uint64_t testid, rd_kafka_message_t *rkmessage,
+                      int32_t exp_partition, int *msgidp) {
+        test_msg_parse00(func, line, testid, exp_partition, msgidp,
+                         rd_kafka_topic_name(rkmessage->rkt),
+                         rkmessage->partition, rkmessage->offset,
+                         (const char *)rkmessage->key, rkmessage->key_len);
 }
 
 

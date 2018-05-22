@@ -58,6 +58,11 @@ struct tostr {
 
 
 
+#define TestMessageVerify(testid,exp_partition,msgidp,msg)              \
+        test_msg_parse00(__FUNCTION__, __LINE__, testid, exp_partition, \
+                         msgidp, (msg)->topic_name().c_str(),           \
+                         (msg)->partition(), (msg)->offset(),           \
+                         (const char *)(msg)->key_pointer(), (msg)->key_len())
 
 namespace Test {
 
