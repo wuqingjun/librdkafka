@@ -233,13 +233,12 @@ struct test tests[] = {
         _TEST(0051_assign_adds, 0, TEST_BRKVER(0,9,0,0)),
         _TEST(0052_msg_timestamps, 0, TEST_BRKVER(0,10,0,0)),
         _TEST(0053_stats_timing, TEST_F_LOCAL),
-        _TEST(0053_stats,
 #if WITH_RAPIDJSON
-              0
+#define TEST_F_REQ_RAPIDJSON 0
 #else
-              TEST_F_KNOWN_ISSUE
+#define TEST_F_REQ_RAPIDJSON TEST_F_KNOWN_ISSUE
 #endif
-                ),
+        _TEST(0053_stats, TEST_F_REQ_RAPIDJSON),
         _TEST(0054_offset_time, 0, TEST_BRKVER(0,10,1,0)),
         _TEST(0055_producer_latency, TEST_F_KNOWN_ISSUE_WIN32),
         _TEST(0056_balanced_group_mt, 0, TEST_BRKVER(0,9,0,0)),

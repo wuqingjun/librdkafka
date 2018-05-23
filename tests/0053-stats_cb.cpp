@@ -240,13 +240,13 @@ static void verify_e2e_stats (const std::string &prod_stats,
    * These documents are already validated in the Event callback.
    */
   rapidjson::Document p;
-  if (p.Parse(prod_stats.c_str()).HasParseError())
+  if (p.Parse<rapidjson::kParseValidateEncodingFlag>(prod_stats.c_str()).HasParseError())
     Test::Fail(tostr() << "Failed to parse producer stats JSON: " <<
                rapidjson::GetParseError_En(p.GetParseError()) <<
                " at " << p.GetErrorOffset());
 
   rapidjson::Document c;
-  if (c.Parse(cons_stats.c_str()).HasParseError())
+  if (c.Parse<rapidjson::kParseValidateEncodingFlag>(cons_stats.c_str()).HasParseError())
     Test::Fail(tostr() << "Failed to parse consumer stats JSON: " <<
                rapidjson::GetParseError_En(c.GetParseError()) <<
                " at " << c.GetErrorOffset());
@@ -269,7 +269,11 @@ static void verify_e2e_stats (const std::string &prod_stats,
 
   for (int part = 0 ; part < partcnt ; part++) {
 
-    /* Find partition stats. */
+    /*
+     * Find partition stats.
+     */
+
+    /* Construct the partition path. */
     char path[256];
     rd_snprintf(path, sizeof(path),
                 "/topics/%s/partitions/%d",
@@ -277,13 +281,21 @@ static void verify_e2e_stats (const std::string &prod_stats,
     Test::Say(tostr() << "Looking up partition " << exp_parts[part].part <<
               " with path " << path << "\n");
 
-    rapidjson::Value *pp = rapidjson::GetValueByPointer(p, path);
-    if (!pp)
-      Test::Fail(tostr() << "Producer: could not find " << path);
+    /* Even though GetValueByPointer() takes a "char[]" it can only be used
+     * with perfectly sized char buffers or string literals since it
+     * does not respect NUL terminators.
+     * So instead convert the path to a Pointer.*/
+    rapidjson::Pointer jpath((const char *)path);
 
-    rapidjson::Value *cp = rapidjson::GetValueByPointer(c, path);
+    rapidjson::Value *pp = rapidjson::GetValueByPointer(p, jpath);
     if (!pp)
-      Test::Fail(tostr() << "Consumer: could not find " << path);
+      Test::Fail(tostr() << "Producer: could not find " << path <<
+                 " in " << prod_stats << "\n");
+
+    rapidjson::Value *cp = rapidjson::GetValueByPointer(c, jpath);
+    if (!pp)
+      Test::Fail(tostr() << "Consumer: could not find " << path <<
+                 " in " << cons_stats << "\n");
 
     assert(pp->HasMember("partition"));
     assert(pp->HasMember("txmsgs"));
@@ -441,9 +453,6 @@ static void test_stats () {
   int recvcnt = 0;
   while (recvcnt < msgcnt) {
     RdKafka::Message *msg = c->consume(-1);
-    Test::Say(tostr() << "Message with error " <<
-              RdKafka::err2str(msg->err()) <<
-              ": " << recvcnt << "/" << msgcnt << "\n");
     if (msg->err())
       Test::Fail("Consume failed: " + msg->errstr());
 
@@ -465,7 +474,9 @@ static void test_stats () {
 
   /*
    * Consumer:
-   * Wait for one last stats emit when all messages have been received
+   * Wait for a one last stats emit when all messages have been received,
+   * since previous stats may have been enqueued but not served we
+   * skip the first 2.
    */
   prev_cnt = consumer_event.stats_cnt;
   while (prev_cnt + 2 >= consumer_event.stats_cnt) {
