@@ -35,6 +35,7 @@
 extern "C" {
 #ifdef _MSC_VER
 /* Win32/Visual Studio */
+#include "../src/win32_config.h"
 #include "../src/rdwin32.h"
 #else
 #include "../config.h"
@@ -75,6 +76,9 @@ namespace Test {
   }
   static RD_UNUSED void FailLater (std::string str) {
     test_FAIL(__FILE__, __LINE__, 0, str.c_str());
+  }
+  static RD_UNUSED void Skip (std::string str) {
+          test_SKIP(__FILE__, __LINE__, str.c_str());
   }
   static RD_UNUSED void Say (int level, std::string str) {
     test_SAY(__FILE__, __LINE__, level, str.c_str());

@@ -41,7 +41,12 @@
 #include <rapidjson/prettywriter.h>
 #endif
 
+#ifdef _MSC_VER
+/* VS tests runs out of win32/.... */
+static const char *stats_schema_path = "../../src/statistics_schema.json";
+#else
 static const char *stats_schema_path = "../src/statistics_schema.json";
+#endif
 
 #if WITH_RAPIDJSON
 /**
@@ -57,6 +62,9 @@ class TestSchemaValidator {
     schema_path_ = schema_path;
 
     std::ifstream f(schema_path);
+    if (!f.is_open())
+            Test::Fail(tostr() << "Failed to open schema " << schema_path <<
+                       ": " << strerror(errno));
     std::string schema_str((std::istreambuf_iterator<char>(f)),
                            (std::istreambuf_iterator<char>()));
 
@@ -150,8 +158,9 @@ class myEventCb : public RdKafka::EventCb {
     switch (event.type())
     {
       case RdKafka::Event::EVENT_STATS:
-        Test::Say(tostr() << "Stats (#" << stats_cnt << "): " <<
-                  event.str() << "\n");
+        if (!(stats_cnt % 10))
+          Test::Say(tostr() << "Stats (#" << stats_cnt << "): " <<
+                    event.str() << "\n");
         if (event.str().length() > 20)
           stats_cnt += 1;
         validator_.validate(event.str());
@@ -401,7 +410,9 @@ static void test_stats () {
   delete conf;
 
   /*
-   * Start consuming partitions
+   * Set up consumer assignment (but assign after producing
+   * since there will be no topics now) and expected partitions
+   * for later verification.
    */
   std::vector<RdKafka::TopicPartition*> toppars;
   struct exp_part_stats exp_parts[partcnt] = {};
@@ -415,10 +426,6 @@ static void test_stats () {
     exp_parts[part].msgsize = msgsize;
     exp_parts[part].totsize = 0;
   }
-
-  c->assign(toppars);
-
-  RdKafka::TopicPartition::destroy(toppars);
 
   /*
    * Produce messages
@@ -444,13 +451,21 @@ static void test_stats () {
 
   free(buf);
 
+  Test::Say("Waiting for final message delivery\n");
   /* Wait for delivery */
   p->flush(15*1000);
+
+  /*
+  * Start consuming partitions
+  */
+  c->assign(toppars);
+  RdKafka::TopicPartition::destroy(toppars);
 
   /*
    * Consume the messages
    */
   int recvcnt = 0;
+  Test::Say(tostr() << "Consuming " << msgcnt << " messages\n");
   while (recvcnt < msgcnt) {
     RdKafka::Message *msg = c->consume(-1);
     if (msg->err())
@@ -506,6 +521,8 @@ extern "C" {
   int main_0053_stats (int argc, char **argv) {
 #if WITH_RAPIDJSON
     test_stats();
+#else
+    Test::Skip("RapidJSON >=1.1.0 not available\n");
 #endif
     return 0;
   }

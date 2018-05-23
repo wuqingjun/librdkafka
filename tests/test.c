@@ -233,12 +233,7 @@ struct test tests[] = {
         _TEST(0051_assign_adds, 0, TEST_BRKVER(0,9,0,0)),
         _TEST(0052_msg_timestamps, 0, TEST_BRKVER(0,10,0,0)),
         _TEST(0053_stats_timing, TEST_F_LOCAL),
-#if WITH_RAPIDJSON
-#define TEST_F_REQ_RAPIDJSON 0
-#else
-#define TEST_F_REQ_RAPIDJSON TEST_F_KNOWN_ISSUE
-#endif
-        _TEST(0053_stats, TEST_F_REQ_RAPIDJSON),
+        _TEST(0053_stats, 0),
         _TEST(0054_offset_time, 0, TEST_BRKVER(0,10,1,0)),
         _TEST(0055_producer_latency, TEST_F_KNOWN_ISSUE_WIN32),
         _TEST(0056_balanced_group_mt, 0, TEST_BRKVER(0,9,0,0)),
@@ -3549,6 +3544,12 @@ void test_SAY (const char *file, int line, int level, const char *str) {
         TEST_SAYL(level, "%s", str);
 }
 
+void test_SKIP (const char *file, int line, const char *str) {
+        TEST_WARN("SKIPPING TEST: %s", str);
+        TEST_LOCK();
+        test_curr->state = TEST_SKIPPED;
+        TEST_UNLOCK();
+}
 
 const char *test_curr_name (void) {
         return test_curr->name;

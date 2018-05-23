@@ -56,6 +56,7 @@ test_produce_msgs_easy_size (const char *topic, uint64_t testid,
 
 void test_FAIL (const char *file, int line, int fail_now, const char *str);
 void test_SAY (const char *file, int line, int level, const char *str);
+void test_SKIP (const char *file, int line, const char *str);
 
 void test_timeout_set (int timeout);
 int test_set_special_conf (const char *name, const char *val, int *timeoutp);
