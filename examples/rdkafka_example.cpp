@@ -221,10 +221,14 @@ void msg_consume(RdKafka::Message* message, void* opaque) {
 	case RdKafka::ERR_NO_ERROR:
 	{
 		++msgCount;
-		std::cout << "msg count: " << msgCount << std::endl;
-		std::cout << "offset: " << message->offset() << std::endl;
 
-		cout << "Key: " << message->key()->c_str() << endl;
+		cout << "payload length: " << message->len() << endl;
+		char * tmp = (char *)message->payload();
+		printf("last char is : %c\n", tmp[message->len() - 1]);
+		printf("last char is : %d\n", tmp[message->len() - 1]);
+		printf("last char is : %x\n", tmp[message->len() - 1]);
+
+		//cout << "Message:" << message->key()->c_str() << "|" << message->timestamp().type << "|" << message->timestamp().timestamp << "|" << msgCount << "|" << message->offset() << endl;
 
 		if (endOffset >= 0 && message->offset() == endOffset) run = false;
 		break;
