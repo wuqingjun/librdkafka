@@ -35,6 +35,9 @@ set(
     rdkafka_transport.c
     rdkafka_interceptor.c
     rdkafka_header.c
+    rdkafka_admin.c
+    rdkafka_aux.c
+    rdkafka_background.c
     rdlist.c
     rdlog.c
     rdmurmur2.c
@@ -118,9 +121,11 @@ target_compile_definitions(rdkafka PUBLIC ${rdkafka_compile_definitions})
 if(RDKAFKA_BUILD_STATIC)
   target_compile_definitions(rdkafka PUBLIC LIBRDKAFKA_STATICLIB)
 endif()
-if(WIN32)
-  target_link_libraries(rdkafka PUBLIC crypt32)
-  if(NOT RDKAFKA_BUILD_STATIC)
+
+if(WIN32)  
+  if(RDKAFKA_BUILD_STATIC)
+    target_link_libraries(rdkafka PUBLIC crypt32)
+  else()
     target_compile_definitions(rdkafka PRIVATE LIBRDKAFKA_EXPORTS)
   endif()
 endif()

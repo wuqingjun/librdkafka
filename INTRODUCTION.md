@@ -152,6 +152,62 @@ to find more details.
 Lower buffering time leads to smaller batches and larger per-message overheads,
 increasing network, memory and CPU usage for producers, brokers and consumers.
 
+#### Latency measurement
+
+End-to-end latency is preferably measured by synchronizing clocks on producers
+and consumers and using the message timestamp on the consumer to calculate
+the full latency. Make sure the topic's `log.message.timestamp.type` is set to
+the default `CreateTime` (Kafka topic configuration, not librdkafka topic).
+
+Latencies are typically incurred by the producer, network and broker, the
+consumer effect on end-to-end latency is minimal.
+
+To break down the end-to-end latencies and find where latencies are adding up
+there are a number of metrics available through librdkafka statistics
+on the producer:
+
+ * `brokers[].int_latency` is the time, per message, between produce()
+   and the message being written to a MessageSet and ProduceRequest.
+   High `int_latency` indicates CPU core contention: check CPU load and,
+   involuntary context switches (`/proc/<..>/status`).
+   Consider using a machine/instance with more CPU cores.
+   This metric is only relevant on the producer.
+
+ * `brokers[].outbuf_latency` is the time, per protocol request
+   (such as ProduceRequest), between the request being enqueued (which happens
+   right after int_latency) and the time the request is written to the
+   TCP socket connected to the broker.
+   High `outbuf_latency` indicates CPU core contention or network congestion:
+   check CPU load and socket SendQ (`netstat -anp | grep :9092`).
+
+ * `brokers[].rtt` is the time, per protocol request, between the request being
+   written to the TCP socket and the time the response is received from
+   the broker.
+   High `rtt` indicates broker load or network congestion:
+   check broker metrics, local socket SendQ, network performance, etc.
+
+ * `brokers[].throttle` is the time, per throttled protocol request, the
+   broker throttled/delayed handling of a request due to usage quotas.
+   The throttle time will also be reflected in `rtt`.
+
+ * `topics[].batchsize` is the size of individual Producer MessageSet batches.
+   See below.
+
+ * `topics[].batchcnt` is the number of messages in individual Producer
+   MessageSet batches. Due to Kafka protocol overhead a batch with few messages
+   will have a higher relative processing and size overhead than a batch
+   with many messages.
+   Use the `linger.ms` client configuration property to set the maximum
+   amount of time allowed for accumulating a single batch, the larger the
+   value the larger the batches will grow, thus increasing efficiency.
+   When producing messages at a high rate it is recommended to increase
+   linger.ms, which will improve throughput and in some cases also latency.
+
+
+See [STATISTICS.md](STATISTICS.md) for the full definition of metrics.
+A JSON schema for the statistics is available in
+[statistics-schema.json](src/statistics-schema.json).
+
 
 ### Compression
 
@@ -448,6 +504,28 @@ addresses for each connection attempt.
 A DNS record containing all broker address can thus be used to provide a
 reliable bootstrap broker.
 
+#### Connection close
+
+A broker connection may be closed by the broker, intermediary network gear,
+due to network errors, timeouts, etc.
+When a broker connection is closed, librdkafka will wait for
+`reconnect.backoff.jitter.ms` +-50% before reconnecting.
+
+The broker will disconnect clients that have not sent any protocol requests
+within `connections.max.idle.ms` (broker configuration propertion, defaults
+to 10 minutes), but there is no fool proof way for the client to know that it
+was a deliberate close by the broker and not an error. To avoid logging these
+deliberate idle disconnects as errors the client employs some logic to try to
+classify a disconnect as an idle disconnect if no requests have been sent in
+the last `socket.timeout.ms` or there are no outstanding, or
+queued, requests waiting to be sent. In this case the standard "Disconnect"
+error log is silenced (will only be seen with debug enabled).
+
+`log.connection.close=false` may be used to silence all disconnect logs,
+but it is recommended to instead rely on the above heuristics.
+
+
+
 ### Feature discovery
 
 Apache Kafka broker version 0.10.0 added support for the ApiVersionRequest API
@@ -539,7 +617,9 @@ for a given partition by calling `rd_kafka_consume_start()`.
 
 After a topic+partition consumer has been started librdkafka will attempt
 to keep `queued.min.messages` messages in the local queue by repeatedly
-fetching batches of messages from the broker.
+fetching batches of messages from the broker. librdkafka will fetch all
+consumed partitions for which that broker is a leader, through a single
+request.
 
 This local message queue is then served to the application through three
 different consume APIs:

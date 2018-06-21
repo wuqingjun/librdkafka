@@ -1,3 +1,31 @@
+/*
+ * librdkafka - Apache Kafka C library
+ *
+ * Copyright (c) 2014-2018 Magnus Edenhill
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #ifndef _RDKAFKA_CONF_H_
 #define _RDKAFKA_CONF_H_
 
@@ -21,6 +49,17 @@ typedef enum {
 	RD_KAFKA_COMPRESSION_INHERIT /* Inherit setting from global conf */
 } rd_kafka_compression_t;
 
+/**
+ * MessageSet compression levels
+ */
+typedef enum {
+	RD_KAFKA_COMPLEVEL_DEFAULT = -1,
+	RD_KAFKA_COMPLEVEL_MIN = -1,
+	RD_KAFKA_COMPLEVEL_GZIP_MAX = 9,
+	RD_KAFKA_COMPLEVEL_LZ4_MAX = 12,
+	RD_KAFKA_COMPLEVEL_SNAPPY_MAX = 0,
+	RD_KAFKA_COMPLEVEL_MAX = 12
+} rd_kafka_complevel_t;
 
 typedef enum {
 	RD_KAFKA_PROTO_PLAINTEXT,
@@ -109,6 +148,10 @@ struct rd_kafka_conf_s {
 	struct {
 		SSL_CTX *ctx;
 		char *cipher_suites;
+#if OPENSSL_VERSION_NUMBER >= 0x1000200fL
+		char *curves_list;
+		char *sigalgs_list;
+#endif
 		char *key_location;
 		char *key_password;
 		char *cert_location;
@@ -293,11 +336,22 @@ struct rd_kafka_conf_s {
         int (*open_cb) (const char *pathname, int flags, mode_t mode,
                         void *opaque);
 
+        /* Background queue event callback */
+        void (*background_event_cb) (rd_kafka_t *rk, rd_kafka_event_t *rkev,
+                                     void *opaque);
+
+
 	/* Opaque passed to callbacks. */
 	void  *opaque;
 
         /* For use with value-less properties. */
         int     dummy;
+
+
+        /* Admin client defaults */
+        struct {
+                int request_timeout_ms;  /* AdminOptions.request_timeout */
+        } admin;
 };
 
 int rd_kafka_socket_cb_linux (int domain, int type, int protocol, void *opaque);
@@ -328,6 +382,7 @@ struct rd_kafka_topic_conf_s {
         int (*msg_order_cmp) (const void *a, const void *b);
 
 	rd_kafka_compression_t compression_codec;
+	rd_kafka_complevel_t compression_level;
         int     produce_offset_report;
 
         int     consume_callback_max_msgs;
@@ -346,5 +401,8 @@ struct rd_kafka_topic_conf_s {
 
 
 void rd_kafka_anyconf_destroy (int scope, void *conf);
+
+
+#include "rdkafka_confval.h"
 
 #endif /* _RDKAFKA_CONF_H_ */

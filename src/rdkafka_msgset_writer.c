@@ -48,8 +48,11 @@ typedef struct rd_kafka_msgset_writer_s {
         int     msetw_features;          /* Protocol features to use */
         int     msetw_msgcntmax;         /* Max number of messages to send
                                           * in a batch. */
-        size_t  msetw_messages_len;      /* Total size of Messages, without
+        size_t  msetw_messages_len;      /* Total size of Messages, with Message
+                                          * framing but without
                                           * MessageSet header */
+        size_t  msetw_messages_kvlen;    /* Total size of Message keys
+                                          * and values */
 
         size_t  msetw_MessageSetSize;    /* Current MessageSetSize value */
         size_t  msetw_of_MessageSetSize; /* offset of MessageSetSize */
@@ -757,6 +760,8 @@ rd_kafka_msgset_writer_write_msgq (rd_kafka_msgset_writer_t *msetw,
                 rd_kafka_msgq_deq(rkmq, rkm, 1);
                 rd_kafka_msgq_enq(&rkbuf->rkbuf_msgq, rkm);
 
+                msetw->msetw_messages_kvlen += rkm->rkm_len + rkm->rkm_key_len;
+
                 /* Add internal latency metrics */
                 rd_avg_add(&rkb->rkb_avg_int_latency,
                            int_latency_base - rkm->rkm_ts_timeout);
@@ -794,9 +799,11 @@ rd_kafka_msgset_writer_compress_gzip (rd_kafka_msgset_writer_t *msetw,
         const void *p;
         size_t rlen;
         int r;
-
+        int comp_level =
+                msetw->msetw_rktp->rktp_rkt->rkt_conf.compression_level;
+				
         memset(&strm, 0, sizeof(strm));
-        r = deflateInit2(&strm, Z_DEFAULT_COMPRESSION,
+        r = deflateInit2(&strm, comp_level,
                          Z_DEFLATED, 15+16,
                          8, Z_DEFAULT_STRATEGY);
         if (r != Z_OK) {
@@ -931,9 +938,12 @@ static int
 rd_kafka_msgset_writer_compress_lz4 (rd_kafka_msgset_writer_t *msetw,
                                      rd_slice_t *slice, struct iovec *ciov) {
         rd_kafka_resp_err_t err;
+        int comp_level =
+                msetw->msetw_rktp->rktp_rkt->rkt_conf.compression_level;
         err = rd_kafka_lz4_compress(msetw->msetw_rkb,
                                     /* Correct or incorrect HC */
                                     msetw->msetw_MsgVersion >= 1 ? 1 : 0,
+                                    comp_level,
                                     slice, &ciov->iov_base, &ciov->iov_len);
         return (err ? -1 : 0);
 }
@@ -1171,6 +1181,9 @@ rd_kafka_msgset_writer_finalize (rd_kafka_msgset_writer_t *msetw,
         rd_assert(len > 0);
         rd_assert(len <= (size_t)rktp->rktp_rkt->rkt_rk->rk_conf.max_msg_size);
 
+        rd_atomic64_add(&rktp->rktp_c.tx_msgs, cnt);
+        rd_atomic64_add(&rktp->rktp_c.tx_msg_bytes, msetw->msetw_messages_kvlen);
+
         /* Compress the message set */
         if (rktp->rktp_rkt->rkt_conf.compression_codec)
                 rd_kafka_msgset_writer_compress(msetw, &len);
@@ -1190,7 +1203,6 @@ rd_kafka_msgset_writer_finalize (rd_kafka_msgset_writer_t *msetw,
                    rktp->rktp_rkt->rkt_topic->str, rktp->rktp_partition,
                    cnt, msetw->msetw_MessageSetSize,
                    msetw->msetw_ApiVersion, msetw->msetw_MsgVersion);
-
 
         return rkbuf;
 }

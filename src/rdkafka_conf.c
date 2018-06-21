@@ -40,6 +40,10 @@
 #include "rdkafka_plugin.h"
 #endif
 
+#ifndef _MSC_VER
+#include <netinet/tcp.h>
+#endif
+
 struct rd_kafka_property {
 	rd_kafka_conf_scope_t scope;
 	const char *name;
@@ -221,7 +225,7 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	{ _RK_GLOBAL, "metadata.max.age.ms", _RK_C_INT,
           _RK(metadata_max_age_ms),
           "Metadata cache max age. "
-          "Defaults to metadata.refresh.interval.ms * 3",
+          "Defaults to topic.metadata.refresh.interval.ms * 3",
           1, 24*3600*1000, -1 },
         { _RK_GLOBAL, "topic.metadata.refresh.fast.interval.ms", _RK_C_INT,
           _RK(metadata_refresh_fast_interval_ms),
@@ -262,15 +266,18 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
                         { RD_KAFKA_DBG_INTERCEPTOR, "interceptor" },
                         { RD_KAFKA_DBG_PLUGIN,   "plugin" },
                         { RD_KAFKA_DBG_CONSUMER, "consumer" },
+                        { RD_KAFKA_DBG_ADMIN,    "admin" },
 			{ RD_KAFKA_DBG_ALL,      "all" }
 		} },
 	{ _RK_GLOBAL, "socket.timeout.ms", _RK_C_INT, _RK(socket_timeout_ms),
 	  "Default timeout for network requests. "
           "Producer: ProduceRequests will use the lesser value of "
-          "socket.timeout.ms and remaining message.timeout.ms for the "
+          "`socket.timeout.ms` and remaining `message.timeout.ms` for the "
           "first message in the batch. "
           "Consumer: FetchRequests will use "
-          "fetch.wait.max.ms + socket.timeout.ms. ",
+          "`fetch.wait.max.ms` + `socket.timeout.ms`. "
+          "Admin: Admin requests will use `socket.timeout.ms` or explicitly "
+          "set `rd_kafka_AdminOptions_set_operation_timeout()` value.",
 	  10, 300*1000, 60*1000 },
 	{ _RK_GLOBAL, "socket.blocking.max.ms", _RK_C_INT,
 	  _RK(socket_blocking_max_ms),
@@ -286,14 +293,18 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  _RK(socket_rcvbuf_size),
 	  "Broker socket receive buffer size. System default is used if 0.",
 	  0, 100000000, 0 },
+#ifdef SO_KEEPALIVE
 	{ _RK_GLOBAL, "socket.keepalive.enable", _RK_C_BOOL,
 	  _RK(socket_keepalive),
           "Enable TCP keep-alives (SO_KEEPALIVE) on broker sockets",
           0, 1, 0 },
+#endif
+#ifdef TCP_NODELAY
 	{ _RK_GLOBAL, "socket.nagle.disable", _RK_C_BOOL,
 	  _RK(socket_nagle_disable),
-          "Disable the Nagle algorithm (TCP_NODELAY).",
+          "Disable the Nagle algorithm (TCP_NODELAY) on broker sockets.",
           0, 1, 0 },
+#endif
         { _RK_GLOBAL, "socket.max.fails", _RK_C_INT,
           _RK(socket_max_fails),
           "Disconnect from broker when this number of send failures "
@@ -364,6 +375,10 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
           "It might be useful to turn this off when interacting with "
           "0.9 brokers with an aggressive `connection.max.idle.ms` value.",
 	  0, 1, 1 },
+        { _RK_GLOBAL, "background_event_cb", _RK_C_PTR,
+          _RK(background_event_cb),
+          "Background queue event callback "
+          "(set with rd_kafka_conf_set_background_event_cb())" },
         { _RK_GLOBAL, "socket_cb", _RK_C_PTR,
           _RK(socket_cb),
           "Socket creation callback to provide race-free CLOEXEC",
@@ -470,6 +485,22 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  "protocol. See manual page for `ciphers(1)` and "
 	  "`SSL_CTX_set_cipher_list(3)."
 	},
+#if OPENSSL_VERSION_NUMBER >= 0x1000200fL
+        { _RK_GLOBAL, "ssl.curves.list", _RK_C_STR,
+          _RK(ssl.curves_list),
+          "The supported-curves extension in the TLS ClientHello message specifies "
+          "the curves (standard/named, or 'explicit' GF(2^k) or GF(p)) the client "
+          "is willing to have the server use. See manual page for "
+          "`SSL_CTX_set1_curves_list(3)`. OpenSSL >= 1.0.2 required."
+        },
+        { _RK_GLOBAL, "ssl.sigalgs.list", _RK_C_STR,
+          _RK(ssl.sigalgs_list),
+          "The client uses the TLS ClientHello signature_algorithms extension "
+          "to indicate to the server which signature/hash algorithm pairs "
+          "may be used in digital signatures. See manual page for "
+          "`SSL_CTX_set1_sigalgs_list(3)`. OpenSSL >= 1.0.2 required."
+        },
+#endif
 	{ _RK_GLOBAL, "ssl.key.location", _RK_C_STR,
 	  _RK(ssl.key_location),
 	  "Path to client's private key (PEM) used for authentication."
@@ -753,12 +784,17 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  "The backoff time in milliseconds before retrying a protocol request.",
 	  1, 300*1000, 100 },
 
-        { _RK_GLOBAL|_RK_PRODUCER, "queue.buffering.backpressure.threshold",
+	{ _RK_GLOBAL|_RK_PRODUCER, "queue.buffering.backpressure.threshold",
           _RK_C_INT, _RK(queue_backpressure_thres),
-          "The threshold of outstanding not yet transmitted requests "
+          "The threshold of outstanding not yet transmitted broker requests "
           "needed to backpressure the producer's message accumulator. "
-          "A lower number yields larger and more effective batches.",
-          0, 1000000, 10 },
+          "If the number of not yet transmitted requests equals or exceeds "
+          "this number, produce request creation that would have otherwise "
+          "been triggered (for example, in accordance with linger.ms) will be "
+          "delayed. A lower number yields larger and more effective batches. "
+          "A higher value can improve latency when using compression on slow "
+          "machines.",
+        1, 1000000, 1 },
 
 	{ _RK_GLOBAL|_RK_PRODUCER, "compression.codec", _RK_C_S2I,
 	  _RK(compression_codec),
@@ -829,7 +865,10 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 	  "Local message timeout. "
 	  "This value is only enforced locally and limits the time a "
 	  "produced message waits for successful delivery. "
-          "A time of 0 is infinite.",
+	  "A time of 0 is infinite. "
+	  "This is the maximum time librdkafka may use to deliver a message "
+	  "(including retries). Delivery error occurs when either the retry "
+	  "count or the message timeout are exceeded.",
 	  0, 900*1000, 300*1000 },
         { _RK_TOPIC|_RK_PRODUCER, "queuing.strategy", _RK_C_S2I,
           _RKT(queuing_strategy),
@@ -889,6 +928,16 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
 		} },
         { _RK_TOPIC | _RK_PRODUCER, "compression.type", _RK_C_ALIAS,
           .sdef = "compression.codec" },
+	{ _RK_TOPIC|_RK_PRODUCER, "compression.level", _RK_C_INT,
+	  _RKT(compression_level),
+	  "Compression level parameter for algorithm selected by configuration "
+	  "property `compression.codec`. Higher values will result in better "
+	  "compression at the cost of more CPU usage. Usable range is "
+	  "algorithm-dependent: [0-9] for gzip; [0-12] for lz4; only 0 for snappy; "
+	  "-1 = codec-dependent default compression level.",
+	  RD_KAFKA_COMPLEVEL_MIN,
+	  RD_KAFKA_COMPLEVEL_MAX,
+	  RD_KAFKA_COMPLEVEL_DEFAULT },
 
 
         /* Topic consumer properties */
@@ -1712,6 +1761,14 @@ void rd_kafka_conf_set_events (rd_kafka_conf_t *conf, int events) {
 	conf->enabled_events = events;
 }
 
+void
+rd_kafka_conf_set_background_event_cb (rd_kafka_conf_t *conf,
+                                       void (*event_cb) (rd_kafka_t *rk,
+                                                         rd_kafka_event_t *rkev,
+                                                         void *opaque)) {
+        conf->background_event_cb = event_cb;
+}
+
 
 void rd_kafka_conf_set_dr_cb (rd_kafka_conf_t *conf,
 			      void (*dr_cb) (rd_kafka_t *rk,
@@ -2246,3 +2303,206 @@ void rd_kafka_conf_properties_show (FILE *fp) {
 	fprintf(fp, "\n");
         fprintf(fp, "### C/P legend: C = Consumer, P = Producer, * = both\n");
 }
+
+
+
+
+/**
+ * @name Configuration value methods
+ *
+ * @remark This generic interface will eventually replace the config property
+ *         used above.
+ * @{
+ */
+
+
+/**
+ * @brief Set up an INT confval.
+ *
+ * @oaram name Property name, must be a const static string (will not be copied)
+ */
+void rd_kafka_confval_init_int (rd_kafka_confval_t *confval,
+                                const char *name,
+                                int vmin, int vmax, int vdef) {
+        confval->name = name;
+        confval->is_enabled = 1;
+        confval->valuetype = RD_KAFKA_CONFVAL_INT;
+        confval->u.INT.vmin = vmin;
+        confval->u.INT.vmax = vmax;
+        confval->u.INT.vdef = vdef;
+        confval->u.INT.v    = vdef;
+}
+
+/**
+ * @brief Set up a PTR confval.
+ *
+ * @oaram name Property name, must be a const static string (will not be copied)
+ */
+void rd_kafka_confval_init_ptr (rd_kafka_confval_t *confval,
+                                const char *name) {
+        confval->name = name;
+        confval->is_enabled = 1;
+        confval->valuetype = RD_KAFKA_CONFVAL_PTR;
+        confval->u.PTR = NULL;
+}
+
+/**
+ * @brief Set up but disable an intval, attempt to set this confval will fail.
+ *
+ * @oaram name Property name, must be a const static string (will not be copied)
+ */
+void rd_kafka_confval_disable (rd_kafka_confval_t *confval, const char *name) {
+        confval->name = name;
+        confval->is_enabled = 0;
+}
+
+/**
+ * @brief Set confval's value to \p valuep, verifying the passed
+ *        \p valuetype matches (or can be cast to) \p confval's type.
+ *
+ * @param dispname is the display name for the configuration value and is
+ *        included in error strings.
+ * @param valuep is a pointer to the value, or NULL to revert to default.
+ *
+ * @returns RD_KAFKA_RESP_ERR_NO_ERROR if the new value was set, or
+ *          RD_KAFKA_RESP_ERR__INVALID_ARG if the value was of incorrect type,
+ *          out of range, or otherwise not a valid value.
+ */
+rd_kafka_resp_err_t
+rd_kafka_confval_set_type (rd_kafka_confval_t *confval,
+                           rd_kafka_confval_type_t valuetype,
+                           const void *valuep,
+                           char *errstr, size_t errstr_size) {
+
+        if (!confval->is_enabled) {
+                rd_snprintf(errstr, errstr_size,
+                            "\"%s\" is not supported for this operation",
+                            confval->name);
+                return RD_KAFKA_RESP_ERR__INVALID_ARG;
+        }
+
+        switch (confval->valuetype)
+        {
+        case RD_KAFKA_CONFVAL_INT:
+        {
+                int v;
+                const char *end;
+
+                if (!valuep) {
+                        /* Revert to default */
+                        confval->u.INT.v = confval->u.INT.vdef;
+                        confval->is_set = 0;
+                        return RD_KAFKA_RESP_ERR_NO_ERROR;
+                }
+
+                switch (valuetype)
+                {
+                case RD_KAFKA_CONFVAL_INT:
+                        v = *(const int *)valuep;
+                        break;
+                case RD_KAFKA_CONFVAL_STR:
+                        v = (int)strtol((const char *)valuep, (char **)&end, 0);
+                        if (end == (const char *)valuep) {
+                                rd_snprintf(errstr, errstr_size,
+                                            "Invalid value type for \"%s\": "
+                                            "expecting integer",
+                                            confval->name);
+                                return RD_KAFKA_RESP_ERR__INVALID_TYPE;
+                        }
+                default:
+                        rd_snprintf(errstr, errstr_size,
+                                    "Invalid value type for \"%s\": "
+                                    "expecting integer", confval->name);
+                        return RD_KAFKA_RESP_ERR__INVALID_ARG;
+                }
+
+
+                if ((confval->u.INT.vmin || confval->u.INT.vmax) &&
+                    (v < confval->u.INT.vmin || v > confval->u.INT.vmax)) {
+                        rd_snprintf(errstr, errstr_size,
+                                    "Invalid value type for \"%s\": "
+                                    "expecting integer in range %d..%d",
+                                    confval->name,
+                                    confval->u.INT.vmin,
+                                    confval->u.INT.vmax);
+                        return RD_KAFKA_RESP_ERR__INVALID_ARG;
+                }
+
+                confval->u.INT.v = v;
+                confval->is_set = 1;
+        }
+        break;
+
+        case RD_KAFKA_CONFVAL_STR:
+        {
+                size_t vlen;
+                const char *v = (const char *)valuep;
+
+                if (!valuep) {
+                        confval->is_set = 0;
+                        if (confval->u.STR.vdef)
+                                confval->u.STR.v = rd_strdup(confval->u.STR.
+                                                             vdef);
+                        else
+                                confval->u.STR.v = NULL;
+                }
+
+                if (valuetype != RD_KAFKA_CONFVAL_STR) {
+                        rd_snprintf(errstr, errstr_size,
+                                    "Invalid value type for \"%s\": "
+                                    "expecting string", confval->name);
+                        return RD_KAFKA_RESP_ERR__INVALID_ARG;
+                }
+
+                vlen = strlen(v);
+                if ((confval->u.STR.minlen || confval->u.STR.maxlen) &&
+                    (vlen < confval->u.STR.minlen ||
+                     vlen > confval->u.STR.maxlen)) {
+                        rd_snprintf(errstr, errstr_size,
+                                    "Invalid value for \"%s\": "
+                                    "expecting string with length "
+                                    "%"PRIusz"..%"PRIusz,
+                                    confval->name,
+                                    confval->u.STR.minlen,
+                                    confval->u.STR.maxlen);
+                        return RD_KAFKA_RESP_ERR__INVALID_ARG;
+                }
+
+                if (confval->u.STR.v)
+                        rd_free(confval->u.STR.v);
+
+                confval->u.STR.v = rd_strdup(v);
+        }
+        break;
+
+        case RD_KAFKA_CONFVAL_PTR:
+                confval->u.PTR = (void *)valuep;
+                break;
+
+        default:
+                RD_NOTREACHED();
+                return RD_KAFKA_RESP_ERR__NOENT;
+        }
+
+        return RD_KAFKA_RESP_ERR_NO_ERROR;
+}
+
+
+int rd_kafka_confval_get_int (const rd_kafka_confval_t *confval) {
+        rd_assert(confval->valuetype == RD_KAFKA_CONFVAL_INT);
+        return confval->u.INT.v;
+}
+
+
+const char *rd_kafka_confval_get_str (const rd_kafka_confval_t *confval) {
+        rd_assert(confval->valuetype == RD_KAFKA_CONFVAL_STR);
+        return confval->u.STR.v;
+}
+
+void *rd_kafka_confval_get_ptr (const rd_kafka_confval_t *confval) {
+        rd_assert(confval->valuetype == RD_KAFKA_CONFVAL_PTR);
+        return confval->u.PTR;
+}
+
+
+/**@}*/

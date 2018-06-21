@@ -56,11 +56,28 @@ test_produce_msgs_easy_size (const char *topic, uint64_t testid,
 
 void test_FAIL (const char *file, int line, int fail_now, const char *str);
 void test_SAY (const char *file, int line, int level, const char *str);
+void test_SKIP (const char *file, int line, const char *str);
 
 void test_timeout_set (int timeout);
 int test_set_special_conf (const char *name, const char *val, int *timeoutp);
 const char *test_conf_get_path (void);
 const char *test_getenv (const char *env, const char *def);
+
+uint64_t test_id_generate (void);
+char *test_str_id_generate (char *dest, size_t dest_size);
+const char *test_str_id_generate_tmp (void);
+
+void test_prepare_msg (uint64_t testid, int32_t partition, int msg_id,
+                       char *val, size_t val_size,
+                       char *key, size_t key_size);
+/**
+ * Parse a message token
+ */
+void test_msg_parse00 (const char *func, int line,
+                       uint64_t testid, int32_t exp_partition, int *msgidp,
+                       const char *topic, int32_t partition, int64_t offset,
+                       const char *key, size_t key_size);
+
 
 /**
  * @returns the current test's name (thread-local)
@@ -135,6 +152,8 @@ typedef struct test_timing_s {
         (TIMING)->ts_every = (TIMING)->ts_start;                        \
         } while (0)
 
+#define TIMING_STOPPED(TIMING) ((TIMING)->duration != 0)
+
 #ifndef __cplusplus
 #define TIMING_STOP(TIMING) do {                                \
         (TIMING)->duration = test_clock() - (TIMING)->ts_start; \
@@ -158,6 +177,27 @@ typedef struct test_timing_s {
 
 #define TIMING_DURATION(TIMING) ((TIMING)->duration ? (TIMING)->duration : \
                                  (test_clock() - (TIMING)->ts_start))
+
+#define TIMING_ASSERT0(TIMING,DO_FAIL_LATER,TMIN_MS,TMAX_MS) do {       \
+        if (!TIMING_STOPPED(TIMING))                                    \
+                TIMING_STOP(&timing);                                   \
+        int _dur_ms = (int)TIMING_DURATION(TIMING) / 1000;              \
+        if (TMIN_MS <= _dur_ms && _dur_ms <= TMAX_MS)                   \
+                break;                                                  \
+        if (test_on_ci)                                                 \
+                TEST_WARN("%s: expected duration %d <= %d <= %d ms%s\n", \
+                          (TIMING)->name, TMIN_MS, _dur_ms, TMAX_MS,    \
+                          ": not FAILING test on CI");                  \
+        else                                                            \
+                TEST_FAIL_LATER0(DO_FAIL_LATER,                         \
+                                 "%s: expected duration %d <= %d <= %d ms", \
+                                 (TIMING)->name, TMIN_MS, _dur_ms, TMAX_MS); \
+        } while (0)
+
+#define TIMING_ASSERT(TIMING,TMIN_MS,TMAX_MS)           \
+        TIMING_ASSERT0(TIMING,0,TMIN_MS,TMAX_MS)
+#define TIMING_ASSERT_LATER(TIMING,TMIN_MS,TMAX_MS)     \
+        TIMING_ASSERT0(TIMING,1,TMIN_MS,TMAX_MS)
 
 /* Trigger something every US microseconds. */
 static RD_UNUSED int TIMING_EVERY (test_timing_t *timing, int us) {

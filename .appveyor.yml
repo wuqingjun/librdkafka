@@ -26,7 +26,7 @@ build:
   parallel: true
   verbosity: normal
 test_script:
-- cmd: if exist DISABLED\win32\outdir\v140 ( win32\outdir\v140\%PLATFORM%\%CONFIGURATION%\tests.exe -l -p1 ) else ( win32\outdir\v120\%PLATFORM%\%CONFIGURATION%\tests.exe -l -p1 )
+- cmd: if exist DISABLED\win32\outdir\v140 ( win32\outdir\v140\%PLATFORM%\%CONFIGURATION%\tests.exe -l -p1 ) else ( cd tests && ..\win32\outdir\v120\%PLATFORM%\%CONFIGURATION%\tests.exe -l -p1 && cd ..)
 artifacts:
 - path: test_report*.json
   name: Test report
@@ -51,6 +51,12 @@ before_deploy:
     # This is the CoApp .autopkg file to create.
 
     $autopkgFile = "win32/librdkafka.autopkg"
+
+    pwd
+
+
+    ls $autopkgFile
+
 
 
     # Get the ".autopkg.template" file, replace "@version" with the Appveyor version number, then save to the ".autopkg" file.
